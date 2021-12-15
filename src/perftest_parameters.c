@@ -432,6 +432,9 @@ static void usage(const char *argv0, VerbType verb, TestType tst, int connection
 	printf("      --cpu_util ");
 	printf(" Show CPU Utilization in report, valid only in Duration mode \n");
 
+	printf("      --validate_data ");
+	printf(" Validate the data after all transfer finishes\n");
+
 	if (tst != FS_RATE) {
 		printf("      --dlid ");
 		printf(" Set a Destination LID instead of getting it from the other side.\n");
@@ -763,6 +766,7 @@ static void init_perftest_params(struct perftest_parameters *user_param)
 	user_param->is_old_raw_eth_param = 0;
 	user_param->is_new_raw_eth_param = 0;
 	user_param->reply_every		= 1;
+	user_param->validate_data	= 0;
 	user_param->vlan_en             = OFF;
 	user_param->vlan_pcp		= 1;
 	user_param->print_eth_func 	= &print_ethernet_header;
@@ -1713,6 +1717,39 @@ static void force_dependecies(struct perftest_parameters *user_param)
 		exit(1);
 	}
 
+	if (user_param->validate_data) {
+		if (user_param->test_method == RUN_ALL) {
+			printf(RESULT_LINE);
+			fprintf(stderr, "--validate_data does not compatible with -a/--all\n");
+			exit(1);
+		}
+		if (user_param->test_method == RUN_INFINITELY) {
+			printf(RESULT_LINE);
+			fprintf(stderr, "--validate_data does not compatible with --run_infinitely\n");
+			exit(1);
+		}
+		if (user_param->test_type == DURATION) {
+			printf(RESULT_LINE);
+			fprintf(stderr, "--validate_data does not compatible with -D/--duration\n");
+			exit(1);
+		}
+		if (user_param->duplex == ON) {
+			printf(RESULT_LINE);
+			fprintf(stderr, "--validate_data does not compatible with -b/--bidirectional\n");
+			exit(1);
+		}
+		if (user_param->is_reversed) {
+			printf(RESULT_LINE);
+			fprintf(stderr, "--validate_data does not compatible with --reversed\n");
+			exit(1);
+		}
+		if (user_param->num_of_qps > 1) {
+			printf(RESULT_LINE);
+			fprintf(stderr, "--validate_data does not compatible with using more than 1 QP\n");
+			exit(1);
+		}
+	}
+
 	return;
 }
 /******************************************************************************
@@ -2144,6 +2181,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 	static int reply_every_flag = 0;
 	static int perform_warm_up_flag = 0;
 	static int use_ooo_flag = 0;
+	static int validate_data_flag = 0;
 	static int vlan_en = 0;
 	static int vlan_pcp_flag = 0;
 	static int recv_post_list_flag = 0;
@@ -2285,6 +2323,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 			{.name = "flows_burst", .has_arg = 1, .flag = &flows_burst_flag, .val = 1},
 			{.name = "reply_every", .has_arg = 1, .flag = &reply_every_flag, .val = 1},
 			{.name = "perform_warm_up", .has_arg = 0, .flag = &perform_warm_up_flag, .val = 1},
+			{.name = "validate_data", .has_arg = 0, .flag = &validate_data_flag, .val = 1},
 			{.name = "vlan_en", .has_arg = 0, .flag = &vlan_en, .val = 1},
 			{.name = "vlan_pcp", .has_arg = 1, .flag = &vlan_pcp_flag, .val = 1},
 			{.name = "recv_post_list", .has_arg = 1, .flag = &recv_post_list_flag, .val = 1},
@@ -3011,6 +3050,9 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 	}
 	if (use_ooo_flag)
 		user_param->use_ooo = 1;
+	if (validate_data_flag) {
+		user_param->validate_data = 1;
+	}
 	if(vlan_en) {
 		user_param->vlan_en = ON;
 		user_param->print_eth_func = &print_ethernet_vlan_header;
