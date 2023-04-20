@@ -233,6 +233,33 @@ int main(int argc, char *argv[])
 	/* For half duplex tests, server just waits for client to exit */
 	if (user_param.machine == SERVER && !user_param.duplex) {
 
+		if (user_param.validate_data) {
+			size_t cnt;
+			uint8_t *send_buf;
+			printf("Generating deterministic data for validation ...\n");
+#ifdef HAVE_CUDA
+			if (user_param.use_cuda) {
+				ALLOCATE(send_buf, uint8_t, user_param.size);
+			}
+			else
+#endif
+				send_buf = (uint8_t *)ctx.buf[0] + ctx.buff_size / 2;
+
+			for (cnt = 0; cnt < user_param.size; ++cnt) {
+				send_buf[cnt] = (uint8_t)(cnt % 16);
+			}
+
+#ifdef HAVE_CUDA
+			if (user_param.use_cuda) {
+				CUresult cuda_error;
+				cuda_error = cuMemcpyHtoD((CUdeviceptr)ctx.buf[0], send_buf, user_param.size);
+				if (cuda_error != CUDA_SUCCESS) {
+					fprintf(stderr, "cuMemcpyHtoD returned %d\n", cuda_error);
+					exit(1);
+				}
+			}
+#endif
+		}
 		if (ctx_hand_shake(&user_comm,&my_dest[0],&rem_dest[0])) {
 			fprintf(stderr," Failed to exchange data between server and clients\n");
 			return FAILURE;
@@ -251,6 +278,7 @@ int main(int argc, char *argv[])
 			else
 				printf(RESULT_LINE);
 		}
+
 
 		if (user_param.work_rdma_cm == ON) {
 			if (destroy_ctx(&ctx,&user_param)) {
@@ -328,9 +356,47 @@ int main(int argc, char *argv[])
 			}
 		}
 
+
 		if(run_iter_bw(&ctx,&user_param)) {
 			fprintf(stderr," Failed to complete run_iter_bw function successfully\n");
 			return FAILURE;
+		}
+
+		if (user_param.validate_data) {
+			int has_validation_error = 0;
+			size_t cnt;
+			uint8_t *recv_buf;
+			printf("Validating data ...\n");
+#ifdef HAVE_CUDA
+			if (user_param.use_cuda) {
+				CUresult cuda_error;
+				ALLOCATE(recv_buf, uint8_t, ctx.buff_size);
+				cuda_error = cuMemcpyDtoH(recv_buf, (CUdeviceptr)ctx.buf[0], ctx.buff_size);
+				if (cuda_error != CUDA_SUCCESS) {
+				  fprintf(stderr, "cuMemcpyDtoH returned %d\n", cuda_error);
+				  exit(1);
+				}
+				recv_buf += ctx.buff_size / 2;
+			}
+			else
+#endif
+			  recv_buf = (uint8_t *)ctx.buf[0];
+
+			for (cnt = 0; cnt < user_param.size; ++cnt) {
+				uint8_t expected_value = (uint8_t)(cnt % 16);
+				uint8_t observed_value = recv_buf[cnt];
+				if (observed_value != expected_value) {
+				  printf("Validation failed at %zu: Expected %u but got %u\n", cnt, expected_value, observed_value);
+				  has_validation_error = 1;
+				}
+			}
+			printf("Validation result ... ");
+			if (has_validation_error) {
+				printf("ERROR\n");
+				printf("Please double-check that the client side has --validate_data.\n");
+			}
+			else
+			  printf("PASSED\n");
 		}
 
 		print_report_bw(&user_param,&my_bw_rep);
