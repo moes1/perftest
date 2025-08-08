@@ -132,13 +132,14 @@ void gen_ipv6_header(void* ip_header_buffer, uint8_t* saddr, uint8_t* daddr,
 	ip_header.version = 6;
 	ip_header.nexthdr = protocol ? protocol : DEFAULT_IPV6_NEXT_HDR;
 	ip_header.hop_limit = hop_limit;
-	ip_header.payload_len = htons(pkt_size - sizeof(struct IP_V6_header));
+	ip_header.payload_len = pkt_size - sizeof(struct IP_V6_header);
 	if (is_l4) {
 		if (is_tcp)
 			ip_header.payload_len -= sizeof(struct TCP_header);
 		else
 			ip_header.payload_len -= sizeof(struct UDP_header);
 	}
+	ip_header.payload_len = htons(ip_header.payload_len);
 	memcpy(&ip_header.saddr, saddr, sizeof(ip_header.saddr));
 	memcpy(&ip_header.daddr, daddr, sizeof(ip_header.daddr));
 
@@ -257,10 +258,10 @@ void set_udp_header(struct udphdr *udp_header, struct ip6_hdr *ip6_header,
     udp_header->source = htons(src_port);
     udp_header->dest = htons(dst_port);
     udp_header->len = htons(sizeof(struct udphdr) + payload_len);
+    //udp_header->len = htons(ip6_header->ip6_plen);
     udp_header->check = 0;
 
     udp_header->check = compute_udp_checksum(udp_header, &ip6_header->ip6_src, &ip6_header->ip6_dst, payload, payload_len);
-    printf("udp_check=%d \n",udp_header->check);
 }
 
 
@@ -772,7 +773,6 @@ void create_raw_eth_pkt( struct perftest_parameters *user_param,
 			// cppcheck-suppress arithOperationsOnVoidPointer
 			eth_header = (void*)buf + pkt_offset;/* update the eth_header to next flow */
 			/* fill ctx buffer with same packets */
-			printf("ctx->size=%d, ctx->buff_size=%d pkt_offset=%d RAWETH=%d\n",ctx->size,ctx->buff_size,ctx->flow_buff_size,RAWETH_ADDITION);
 			while ((flow_limit - INC(ctx->size, ctx->cache_line_size)) >= pkt_offset) {
 				build_pkt_on_buffer(eth_header, my_dest_info, rem_dest_info,
 						    user_param, ctx->memory, eth_type, ip_next_protocol,
