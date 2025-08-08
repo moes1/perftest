@@ -51,6 +51,12 @@
 #include "multicast_resources.h"
 #include "perftest_communication.h"
 #include "raw_ethernet_resources.h"
+#include <arpa/inet.h>
+#include <netinet/udp.h>
+#include <netinet/ip6.h>
+#include <stdint.h>
+
+
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -168,6 +174,97 @@ void gen_ipv4_header(void* ip_header_buffer, uint32_t* saddr, uint32_t* daddr,
 /******************************************************************************
  *
  ******************************************************************************/
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <arpa/inet.h>
+
+struct pseudo_header_ipv6 {
+    uint8_t src_addr[16];
+    uint8_t dst_addr[16];
+    uint32_t udp_length;
+    uint8_t zero[3];
+    uint8_t next_header;
+};
+
+uint16_t compute_udp_checksum(const struct udphdr *udp_header,
+                              const struct in6_addr *src6,
+                              const struct in6_addr *dst6,
+                              const uint8_t *payload,
+                              size_t payload_len) {
+    if (!udp_header || !src6 || !dst6 || (!payload && payload_len > 0)) {
+        return 0;
+    }
+
+    struct pseudo_header_ipv6 psh;
+    memcpy(psh.src_addr, src6->s6_addr, 16);
+    memcpy(psh.dst_addr, dst6->s6_addr, 16);
+    psh.udp_length = htonl(sizeof(struct udphdr) + payload_len);
+    memset(psh.zero, 0, sizeof(psh.zero));
+    psh.next_header = IPPROTO_UDP;
+
+    size_t total_len = sizeof(psh) + sizeof(struct udphdr) + payload_len;
+    if (total_len % 2 != 0) {
+        total_len++; // pad for odd length
+    }
+
+    uint8_t *buf = (uint8_t *)calloc(1, total_len);
+    if (!buf) {
+        return 0;
+    }
+
+    size_t offset = 0;
+    memcpy(buf + offset, &psh, sizeof(psh));
+    offset += sizeof(psh);
+
+    struct udphdr udp_copy = *udp_header;
+    udp_copy.check = 0;
+    memcpy(buf + offset, &udp_copy, sizeof(struct udphdr));
+    offset += sizeof(struct udphdr);
+
+    memcpy(buf + offset, payload, payload_len);
+
+    uint32_t sum = 0;
+    for (size_t i = 0; i < total_len; i += 2) {
+        uint16_t word = buf[i] << 8;
+        if (i + 1 < total_len) {
+            word |= buf[i + 1];
+        }
+        sum += word;
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    free(buf);
+    return htons(~sum & 0xFFFF);
+}
+
+
+#define UDP_HEADER_SIZE 8
+
+void* get_udp_payload(void* UDP_packet_buffer, int pkt_size) {
+    // Skip the UDP header
+    return (void*)((uint8_t*)UDP_packet_buffer + UDP_HEADER_SIZE);
+}
+
+void set_udp_header(struct udphdr *udp_header, struct ip6_hdr *ip6_header,
+                    uint16_t src_port, uint16_t dst_port,
+                    uint8_t *payload, size_t payload_len)
+{
+    udp_header->source = htons(src_port);
+    udp_header->dest = htons(dst_port);
+    udp_header->len = htons(sizeof(struct udphdr) + payload_len);
+    udp_header->check = 0;
+
+    udp_header->check = compute_udp_checksum(udp_header, &ip6_header->ip6_src, &ip6_header->ip6_dst, payload, payload_len);
+    printf("udp_check=%d \n",udp_header->check);
+}
+
+
+
 void gen_udp_header(void* UDP_header_buffer, int src_port, int dst_port, int pkt_size)
 {
 	struct UDP_header udp_header;
@@ -176,7 +273,7 @@ void gen_udp_header(void* UDP_header_buffer, int src_port, int dst_port, int pkt
 
 	udp_header.uh_sport = htons(src_port);
 	udp_header.uh_dport = htons(dst_port);
-	udp_header.uh_ulen = htons(pkt_size - sizeof(struct IP_V4_header));
+	udp_header.uh_ulen = htons(pkt_size - sizeof(struct ip6_hdr));
 	udp_header.uh_sum = 0;
 
 	memcpy(UDP_header_buffer, &udp_header, sizeof(struct UDP_header));
@@ -613,9 +710,23 @@ void build_pkt_on_buffer(struct ETH_header* eth_header,
 		if (user_param->tcp)
 			gen_tcp_header(header_buff, my_dest_info->port + flows_offset,
 				       rem_dest_info->port + flows_offset);
-		else
+		else{
 			gen_udp_header(header_buff, my_dest_info->port + flows_offset,
 				       rem_dest_info->port+ flows_offset, pkt_size);
+                        // UDP checksum support using payload from memory context
+                        struct udphdr *udp_header = (struct udphdr *)header_buff;
+                        struct ip6_hdr *ip6_header = (struct ip6_hdr *)((uint8_t *)eth_header + eth_header_size);
+
+                        size_t header_total_len = eth_header_size + sizeof(struct ip6_hdr) + sizeof(struct udphdr);
+                        //size_t header_total_len = eth_header_size + sizeof(struct ip6_hdr);
+                        size_t payload_len = pkt_size - header_total_len;
+
+                        uint8_t *payload = (uint8_t *)((uint8_t *)eth_header + header_total_len);
+                        set_udp_header(udp_header, ip6_header,
+                                       my_dest_info->port + flows_offset,
+                                       rem_dest_info->port + flows_offset,
+                                       payload, payload_len);
+                    }
 
 	}
 
@@ -661,6 +772,7 @@ void create_raw_eth_pkt( struct perftest_parameters *user_param,
 			// cppcheck-suppress arithOperationsOnVoidPointer
 			eth_header = (void*)buf + pkt_offset;/* update the eth_header to next flow */
 			/* fill ctx buffer with same packets */
+			printf("ctx->size=%d, ctx->buff_size=%d pkt_offset=%d RAWETH=%d\n",ctx->size,ctx->buff_size,ctx->flow_buff_size,RAWETH_ADDITION);
 			while ((flow_limit - INC(ctx->size, ctx->cache_line_size)) >= pkt_offset) {
 				build_pkt_on_buffer(eth_header, my_dest_info, rem_dest_info,
 						    user_param, ctx->memory, eth_type, ip_next_protocol,
