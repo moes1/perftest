@@ -66,6 +66,9 @@ int main(int argc, char *argv[])
 	int				ret_parser;
 	struct perftest_parameters	user_param;
 
+        struct perftest_comm            user_comm;
+	struct pingpong_dest            *dummy_my_dest,*dummy_rem_dest;
+
 	struct ibv_flow			**flow_create_result;
 	struct ibv_flow_attr		**flow_rules;
 	struct ibv_flow 		**flow_promisc = NULL ;
@@ -78,6 +81,7 @@ int main(int argc, char *argv[])
 	/* init default values to user's parameters */
 	memset(&ctx, 0, sizeof(struct pingpong_context));
 	memset(&user_param, 0 , sizeof(struct perftest_parameters));
+	memset(&user_comm,0,sizeof(struct perftest_comm));
 
 	user_param.verb    = SEND;
 	user_param.tst     = BW;
@@ -106,6 +110,10 @@ int main(int argc, char *argv[])
 	MAIN_ALLOC(flow_sniffer, struct ibv_flow*, user_param.num_of_qps, free_flow_rules);
 	#endif
 	MAIN_ALLOC(flow_promisc, struct ibv_flow*, user_param.num_of_qps, free_flow_sniffer);
+        MAIN_ALLOC(dummy_my_dest , struct pingpong_dest ,1, free_dummy_my_dest);
+        memset(dummy_my_dest, 0, sizeof(struct pingpong_dest));
+	MAIN_ALLOC(dummy_rem_dest , struct pingpong_dest ,1, free_dummy_rem_dest);
+	memset(dummy_rem_dest, 0, sizeof(struct pingpong_dest));
 
 	if (user_param.raw_mcast) {
 		/* Transform IPv4 to Multicast MAC */
@@ -157,6 +165,26 @@ int main(int argc, char *argv[])
 		DEBUG_LOG(TRACE, "<<<<<<%s", __FUNCTION__);
 		goto free_devname;
 	}
+
+        /* copy the relevant user parameters to the comm struct + creating rdma_cm resources. */
+        if (create_comm_struct(&user_comm,&user_param)) {
+                fprintf(stderr," Unable to create RDMA_CM resources\n");
+                goto free_devname;
+        }
+ 
+        /* Initialize the socket connection. */
+        if (establish_connection(&user_comm)) {
+                fprintf(stderr," Unable to init the socket connection\n");
+                dealloc_comm_struct(&user_comm,&user_param);
+                goto free_devname;
+        }
+ 
+        /* Perform the hand shake. */
+        if (ctx_hand_shake(&user_comm,dummy_my_dest,dummy_rem_dest)) {
+                fprintf(stderr," Failed to exchange data between server and clients\n");
+                exit(1);
+        }
+
 
 	/* Allocating arrays needed for the test. */
 	if (alloc_ctx(&ctx,&user_param)){
@@ -282,6 +310,12 @@ int main(int argc, char *argv[])
 		printf((user_param.cpu_util_data.enable ? RESULT_EXT_CPU_UTIL : RESULT_EXT));
 	}
 
+        /* Perform the hand shake. */
+        if (ctx_hand_shake(&user_comm,dummy_my_dest,dummy_rem_dest)) {
+                fprintf(stderr," Failed to exchange data between server and clients\n");
+                exit(1);
+        }
+ 
 	if (user_param.test_method == RUN_REGULAR) {
 		if (user_param.machine == CLIENT || user_param.duplex) {
 			ctx_set_send_wqes(&ctx,	&user_param, NULL);
@@ -464,6 +498,10 @@ free_rem_dest:
 	free(rem_dest_info);
 free_my_dest:
 	free(my_dest_info);
+free_dummy_rem_dest:
+        free(dummy_rem_dest);
+free_dummy_my_dest:
+        free(dummy_my_dest);
 return_error:
 	return FAILURE;
 }
